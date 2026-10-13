@@ -341,10 +341,37 @@ def fetch(
             )
         return rescued
 
+    # Paid fallback (Firecrawl), tried only after the OA rescue has failed and
+    # before the URL is queued for the Chrome lane. Opt-in per vault and bounded
+    # per run; with it off, or any guard failing, every block below behaves
+    # exactly as before.
+    from hyperresearch.core import fallback as paid_fallback
+
+    fallback_ticket: dict | None = None
+
+    def _paid_rescue(kind: str, orig_status: int | None):
+        """Attempt the paid fallback. Returns a WebResult or None."""
+        nonlocal fallback_ticket
+        got = paid_fallback.try_fallback(
+            vault=vault, url=url, tags=tags, utility_score=utility_score,
+            kind=kind, orig_status=orig_status,
+        )
+        if got is None:
+            return None
+        rescued, fallback_ticket = got
+        if not json_output:
+            console.print(
+                f"[cyan]Source blocked — retrieved via Firecrawl[/] "
+                f"({len(rescued.content or ''):,} chars)"
+            )
+        return rescued
+
     try:
         result = prov.fetch(url)
     except Exception as e:
         result = _rescue(f"fetch failed: {e}", None)
+        if result is None:
+            result = _paid_rescue(paid_fallback.KIND_FETCH_ERROR, None)
         if result is None:
             if json_output:
                 output(error(str(e), "FETCH_ERROR"), json_mode=True)
@@ -356,6 +383,8 @@ def fetch(
     # instead of silently losing the source.
     if oa_location is None and result.looks_like_login_wall(url, vault.config.junk):
         rescued = _rescue(f"login wall: {result.title}", result.raw_html)
+        if rescued is None:
+            rescued = _paid_rescue(paid_fallback.KIND_LOGIN_WALL, result.metadata.get("status_code"))
         if rescued is not None:
             result = rescued
         else:
@@ -377,9 +406,17 @@ def fetch(
     # Bot-detection junk (Cloudflare/captcha walls) escalates to the browser
     # lane; content-quality junk (error pages, empty content) does not — a
     # 404 in Chrome is still a 404.
-    junk_reason = result.looks_like_junk(vault.config.junk) if oa_location is None else None
+    junk_reason = (
+        result.looks_like_junk(vault.config.junk)
+        if oa_location is None and fallback_ticket is None
+        else None
+    )
     if junk_reason:
         rescued = _rescue(junk_reason, result.raw_html)
+        if rescued is None:
+            kind = paid_fallback.junk_kind(junk_reason)
+            if kind is not None:
+                rescued = _paid_rescue(kind, result.metadata.get("status_code"))
         if rescued is not None:
             result = rescued
         else:
@@ -414,7 +451,7 @@ def fetch(
     )
     original_chars = len(result.content or "")
 
-    if oa_location is None:
+    if oa_location is None and fallback_ticket is None:
         result, oa_location = recover_full_text(vault, prov, url, detected_doi, result)
     else:
         # Rescued above. Nothing was read from the source, so there is no
@@ -427,11 +464,12 @@ def fetch(
 
     detected_content_type = _detect_content_type(url, result.raw_content_type)
     detected_tier = _detect_tier(url, detected_content_type)
+    fetch_provider = "firecrawl" if fallback_ticket is not None else prov.name
     extra_meta = {
         "source": url,
         "source_domain": domain,
         "fetched_at": result.fetched_at.isoformat(),
-        "fetch_provider": prov.name,
+        "fetch_provider": fetch_provider,
     }
     if result.metadata.get("author"):
         extra_meta["author"] = result.metadata["author"]
@@ -474,6 +512,8 @@ def fetch(
             + "\n"
             + body_content
         )
+    if fallback_ticket is not None:
+        body_content = paid_fallback.fallback_notice(fallback_ticket, result) + "\n" + body_content
 
     note_path = write_note(
         vault.notes_dir,
@@ -538,7 +578,7 @@ def fetch(
     conn.execute(
         """INSERT OR IGNORE INTO sources (url, note_id, domain, fetched_at, provider, content_hash)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (url, note_id, domain, result.fetched_at.isoformat(), prov.name, content_hash),
+        (url, note_id, domain, result.fetched_at.isoformat(), fetch_provider, content_hash),
     )
     conn.commit()
 
@@ -580,6 +620,9 @@ def fetch(
         if winner_path_row:
             note_path = vault.root / winner_path_row["path"]
 
+    if fallback_ticket is not None:
+        paid_fallback.link_note(fallback_ticket, note_id)
+
     # Save assets (screenshot + images) — only when requested
     saved_assets: list[dict] = []
     if save_assets:
@@ -594,7 +637,7 @@ def fetch(
         "title": note_title,
         "url": url,
         "domain": domain,
-        "provider": prov.name,
+        "provider": fetch_provider,
         "path": str(note_path.relative_to(vault.root)),
         "word_count": len(result.content.split()),
         "assets": saved_assets,
@@ -610,6 +653,15 @@ def fetch(
             "kind": "rescued" if rescue_reason else "substituted",
             "nothing_from_source": bool(rescue_reason),
             "blocked_reason": rescue_reason,
+        }
+
+    if fallback_ticket is not None:
+        data["fallback"] = {
+            "provider": "firecrawl",
+            "blocked_reason": fallback_ticket["kind"],
+            "orig_status": fallback_ticket["orig_status"],
+            "credits": fallback_ticket.get("credits"),
+            "cache_state": fallback_ticket.get("cache_state"),
         }
 
     if json_output:

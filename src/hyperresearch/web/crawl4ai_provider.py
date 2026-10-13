@@ -9,7 +9,6 @@ Supports authenticated crawling via crawl4ai browser profiles:
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import pathlib
 import sys
@@ -22,6 +21,7 @@ from crawl4ai.content_filter_strategy import PruningContentFilter
 
 from hyperresearch.core.config import FetchSettings, JunkGates
 from hyperresearch.web.base import WebResult, is_binary_garbage
+from hyperresearch.web.pdf_text import _pdf_log, pdf_bytes_to_result
 
 # Fix Windows encoding before crawl4ai's managed browser tries to log Unicode
 if sys.platform == "win32":
@@ -92,10 +92,6 @@ def _smart_wait_js(settings: FetchSettings) -> str:
 
 
 _PYMUPDF_MISSING_LOGGED = False
-
-
-def _pdf_log() -> logging.Logger:
-    return logging.getLogger("hyperresearch.pdf")
 
 
 def _import_pymupdf():
@@ -173,44 +169,7 @@ def _fetch_pdf(url: str, settings: FetchSettings | None = None) -> WebResult | N
             _pdf_log().warning("PDF fetch for %s returned only %d bytes", url, len(pdf_bytes))
             return None
 
-        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-
-        # Extract text from all pages
-        pages = []
-        for page in doc:
-            text = page.get_text("text")
-            if text.strip():
-                pages.append(text)
-
-        page_count = doc.page_count
-        doc.close()
-
-        if not pages:
-            _pdf_log().warning(
-                "PDF at %s has %d page(s) but no extractable text layer — "
-                "likely a scanned document requiring OCR.", url, page_count,
-            )
-            return None
-
-        # Build markdown from extracted text
-        full_text = "\n\n---\n\n".join(pages)
-        title = ""
-        # Try to get title from first page (first non-empty line)
-        for line in pages[0].split("\n"):
-            line = line.strip()
-            if len(line) > 10:
-                title = line
-                break
-
-        return WebResult(
-            url=url,
-            title=title or f"PDF: {url.split('/')[-1]}",
-            content=full_text,
-            fetched_at=datetime.now(UTC),
-            metadata={"content_type": "application/pdf", "pages": len(pages)},
-            raw_bytes=pdf_bytes,
-            raw_content_type="application/pdf",
-        )
+        return pdf_bytes_to_result(url, pdf_bytes, pymupdf)
 
     except Exception as e:
         _pdf_log().warning("PDF extraction failed for %s: %s", url, e)
@@ -321,7 +280,8 @@ class Crawl4AIProvider:
                 ignore_https_errors=True,
             )
             page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=self._settings.page_timeout_ms)
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=self._settings.page_timeout_ms)
+            status_code = response.status if response is not None else None
 
             # Smart wait — same logic (and same builder) as the headless config
             await page.evaluate(_smart_wait_js(self._settings))
@@ -350,14 +310,16 @@ class Crawl4AIProvider:
             content=content,
             raw_html=html,
             fetched_at=datetime.now(UTC),
-            metadata={"title": title},
+            metadata={"title": title, "status_code": status_code},
             screenshot=screenshot_bytes,
         )
 
     async def _fetch_async(self, url: str) -> WebResult:
         async with self._make_crawler() as crawler:
             result = await crawler.arun(url=url, config=self._run_config)
-            metadata = result.metadata or {}
+            # The page's HTTP status rides along in metadata for the paid
+            # fallback's eligibility check (a 404 must not be retried).
+            metadata = {**(result.metadata or {}), "status_code": getattr(result, "status_code", None)}
 
             # result.markdown is a MarkdownGenerationResult with .raw_markdown,
             # .fit_markdown, .markdown_with_citations, etc.

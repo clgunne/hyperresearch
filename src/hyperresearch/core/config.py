@@ -86,6 +86,34 @@ class ChromeSettings:
 
 
 @dataclass(frozen=True)
+class FirecrawlSettings:
+    """Paid fetch fallback for blocked sources ([firecrawl] section).
+
+    When crawl4ai and the open-access rescue both fail, `hyperresearch fetch`
+    can retry the URL once through Firecrawl before queueing it for the Chrome
+    lane. Off by default: a vault opts in, and the key comes from
+    FIRECRAWL_API_KEY or `.hyperresearch/.env`. Every request asks for the raw
+    PDF (`parsers: []`), so each attempt costs one credit and
+    `max_attempts_per_run` is also the run's credit ceiling.
+    """
+
+    enabled: bool = False
+    # Same bar as the Chrome lane. Unscored URLs are attempted.
+    utility_threshold: float = 8.0
+    # Attempts, not successes: a failed scrape still bills.
+    max_attempts_per_run: int = 25
+    # Accept a Firecrawl cached copy up to this old (Firecrawl's default).
+    max_age_ms: int = 172_800_000
+    timeout_ms: int = 60_000
+    # URLs whose query string carries a parameter matching one of these
+    # (case-insensitive glob) are never sent: signed or token-bearing links.
+    deny_query_params: tuple[str, ...] = (
+        "*signature*", "*credential*", "*token*", "sig", "key", "apikey",
+        "api_key", "auth*", "policy", "key-pair-id", "x-amz-*", "x-goog-*",
+    )
+
+
+@dataclass(frozen=True)
 class RankingSettings:
     """Composite source-quality scoring weights ([ranking] section).
 
@@ -239,6 +267,7 @@ class VaultConfig:
     ranking: RankingSettings = field(default_factory=RankingSettings)
     embeddings: EmbeddingSettings = field(default_factory=EmbeddingSettings)
     chrome: ChromeSettings = field(default_factory=ChromeSettings)
+    firecrawl: FirecrawlSettings = field(default_factory=FirecrawlSettings)
     scholar: ScholarSettings = field(default_factory=ScholarSettings)
 
     # Index
@@ -288,6 +317,7 @@ class VaultConfig:
             ranking=_build_section(RankingSettings, data.get("ranking", {})),
             embeddings=_build_section(EmbeddingSettings, data.get("embeddings", {})),
             chrome=_build_section(ChromeSettings, data.get("chrome", {})),
+            firecrawl=_build_section(FirecrawlSettings, data.get("firecrawl", {})),
             scholar=_build_section(ScholarSettings, data.get("scholar", {})),
             auto_sync=sync.get("auto_sync", cls.auto_sync),
             exclude_patterns=sync.get("exclude_patterns", cls().exclude_patterns),
@@ -357,6 +387,7 @@ class VaultConfig:
         lines += self._section_lines("ranking", self.ranking)
         lines += self._section_lines("embeddings", self.embeddings)
         lines += self._section_lines("chrome", self.chrome)
+        lines += self._section_lines("firecrawl", self.firecrawl)
         lines += self._section_lines(
             "scholar",
             self.scholar,

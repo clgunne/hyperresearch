@@ -208,3 +208,11 @@ def test_key_from_vault_env_file(tmp_path: Path, monkeypatch):
 def test_no_key_anywhere(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
     assert fb.resolve_key(tmp_path) is None
+
+
+# --- rescue size ---------------------------------------------------------------
+
+def test_prose_words_reduce_links_to_their_text():
+    assert fb.prose_words("Read [the full report](https://example.org/a/b/c) today") == 5
+    assert fb.prose_words("![Logo](https://example.org/l.png)") == 1
+    assert fb.prose_words("") == 0

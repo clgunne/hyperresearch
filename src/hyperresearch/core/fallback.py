@@ -28,6 +28,7 @@ from urllib.parse import parse_qsl, urlparse
 from hyperresearch.core.config import FirecrawlSettings, JunkGates
 
 RUN_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,59}-[0-9a-f]{6}$")
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 
 # Block kinds the fallback may retry. Anything else (error pages, search
 # results, binary garbage) is not a block: a 404 through Firecrawl is still a 404.
@@ -198,11 +199,18 @@ def finish(db_path: Path, rid: str, outcome: str, **fields) -> None:
         _log().warning("could not record a fallback outcome: %s", e)
 
 
-def _accepted(result, gates: JunkGates) -> bool:
+def prose_words(text: str) -> int:
+    """Words left once markdown links and images are reduced to their text."""
+    return len(_MD_LINK.sub(r"\1", text or "").split())
+
+
+def _accepted(result, gates: JunkGates, min_words: int) -> bool:
     status = result.metadata.get("status_code")
     if status is not None and not (200 <= status < 300):
         return False
     if len(result.content or "") < gates.min_content_chars:
+        return False
+    if prose_words(result.content) < min_words:
         return False
     if result.looks_like_login_wall(result.url, gates):
         return False
@@ -259,7 +267,7 @@ def try_fallback(
         "cache_state": meta.get("cache_state"),
         "cached_at": meta.get("cached_at"),
     }
-    if not _accepted(result, vault.config.junk):
+    if not _accepted(result, vault.config.junk, settings.min_rescue_words):
         finish(vault.db_path, rid, "rejected", **recorded)
         return None
     finish(vault.db_path, rid, "rescued", **recorded)

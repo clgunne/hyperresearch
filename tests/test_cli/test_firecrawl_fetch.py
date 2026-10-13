@@ -231,9 +231,13 @@ def test_rescue_writes_a_disclosed_note_and_no_queue_row(vault, monkeypatch):
         WebResult(url=URL, title="T", content="too short", metadata={"status_code": 200}),
         WebResult(url=URL, title="Just a moment...", content="Checking your browser " * 30,
                   metadata={"status_code": 200}),
+        # A navigation shell: long in characters, short in words once links are text.
+        WebResult(url=URL, title="Leagle", content="\n".join(
+            f"- [Section {i}](https://example.org/section/{i}/with/a/long/path)" for i in range(80)
+        ), metadata={"status_code": 200}),
         None,
     ],
-    ids=["non-2xx", "thin", "still-blocked", "error"],
+    ids=["non-2xx", "thin", "still-blocked", "nav-shell", "error"],
 )
 def test_rejected_firecrawl_result_falls_through_to_todays_outcome(vault, monkeypatch, bad):
     _FakeFirecrawl.result = bad

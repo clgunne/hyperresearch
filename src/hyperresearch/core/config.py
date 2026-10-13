@@ -100,8 +100,12 @@ class FirecrawlSettings:
     enabled: bool = False
     # Same bar as the Chrome lane. Unscored URLs are attempted.
     utility_threshold: float = 8.0
-    # Attempts, not successes: a failed scrape still bills.
+    # Attempts, not successes: a rejected scrape still bills.
     max_attempts_per_run: int = 25
+    # A rescue must carry at least this many words once markdown links are
+    # reduced to their text. Below it the page is a navigation shell or a
+    # teaser, and the URL falls through to the Chrome lane as before.
+    min_rescue_words: int = 400
     # Accept a Firecrawl cached copy up to this old (Firecrawl's default).
     max_age_ms: int = 172_800_000
     timeout_ms: int = 60_000

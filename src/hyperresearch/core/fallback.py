@@ -28,7 +28,10 @@ from urllib.parse import parse_qsl, urlparse
 from hyperresearch.core.config import FirecrawlSettings, JunkGates
 
 RUN_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,59}-[0-9a-f]{6}$")
-_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+# Page content is untrusted, so the link stripper below is a single linear pass:
+# a link-matching regex is quadratic on hostile input such as a long run of "[".
+_LINK_TARGET_END = re.compile(r"[)\s]")
+_PROSE_SCAN_CHARS = 300_000
 
 # Block kinds the fallback may retry. Anything else (error pages, search
 # results, binary garbage) is not a block: a 404 through Firecrawl is still a 404.
@@ -199,9 +202,33 @@ def finish(db_path: Path, rid: str, outcome: str, **fields) -> None:
         _log().warning("could not record a fallback outcome: %s", e)
 
 
-def prose_words(text: str) -> int:
-    """Words left once markdown links and images are reduced to their text."""
-    return len(_MD_LINK.sub(r"\1", text or "").split())
+def prose_words(text: str, stop_at: int | None = None) -> int:
+    """Words left once markdown links and images are reduced to their text.
+
+    Scans line by line over a bounded prefix and stops once `stop_at` is
+    reached, since the caller only needs to know whether a floor is cleared.
+    """
+    count = 0
+    for line in (text or "")[:_PROSE_SCAN_CHARS].splitlines():
+        count += len(_strip_link_targets(line).split())
+        if stop_at is not None and count >= stop_at:
+            break
+    return count
+
+
+def _strip_link_targets(line: str) -> str:
+    """Drop every `(target)` after a `]`, then the brackets, keeping link text."""
+    kept = []
+    i = 0
+    while True:
+        j = line.find("](", i)
+        if j < 0:
+            kept.append(line[i:])
+            break
+        kept.append(line[i:j])
+        end = _LINK_TARGET_END.search(line, j + 2)
+        i = end.end() if end else len(line)
+    return "".join(kept).replace("![", " ").replace("[", " ").replace("]", " ")
 
 
 def _accepted(result, gates: JunkGates, min_words: int) -> bool:
@@ -210,7 +237,7 @@ def _accepted(result, gates: JunkGates, min_words: int) -> bool:
         return False
     if len(result.content or "") < gates.min_content_chars:
         return False
-    if prose_words(result.content) < min_words:
+    if prose_words(result.content, stop_at=min_words) < min_words:
         return False
     if result.looks_like_login_wall(result.url, gates):
         return False

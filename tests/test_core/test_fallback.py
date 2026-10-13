@@ -216,3 +216,12 @@ def test_prose_words_reduce_links_to_their_text():
     assert fb.prose_words("Read [the full report](https://example.org/a/b/c) today") == 5
     assert fb.prose_words("![Logo](https://example.org/l.png)") == 1
     assert fb.prose_words("") == 0
+
+
+def test_prose_words_stays_linear_on_adversarial_input():
+    import time
+
+    hostile = "[" * 1_000_000 + "](" + "x" * 100_000
+    started = time.monotonic()
+    fb.prose_words(hostile, stop_at=400)
+    assert time.monotonic() - started < 2.0

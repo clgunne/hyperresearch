@@ -86,7 +86,7 @@ Before you invoke any step skill, do this:
    - **Vault check.** If `.hyperresearch/` doesn't exist in the working directory, run `hyperresearch init . --json`. Creates the SQLite vault and `research/` directory.
    - **Step-skills check.** If `.claude/skills/hyperresearch-1-decompose/SKILL.md` doesn't exist relative to the working directory, run `hyperresearch install --steps-only . --json`. Installs the 16 step skill files needed by `Skill(skill: "hyperresearch-N-...")` calls in later steps.
 
-   If either command fails because the binary isn't on PATH, tell the user to run `pip install hyperresearch` first. If both files already exist, both commands no-op cheaply — safe to run unconditionally.
+   If either command fails because the binary isn't on PATH, stop and point the user at the pinned-fork install line in `~/.claude/skills-catalog.md` (the `hyperresearch` row). Never run or suggest a bare `pip install hyperresearch` or `uv tool install hyperresearch`: that installs upstream and drops the fork's Firecrawl fallback. If both files already exist, both commands no-op cheaply — safe to run unconditionally.
 
 0.5. **Archive any pre-3.0 flat artifacts.** Run `hyperresearch archive-run --json`. On vaults that ran pre-3.0 pipelines, flat artifacts (research/scaffold.md, loci.json, etc.) may still sit at the research root; this moves them into `research/runs/archive-<prev-tag>-<UTC-timestamp>/`. On 3.0+ vaults every run already owns `research/runs/<vault_tag>/`, so concurrent and sequential runs never collide and this command cheaply no-ops.
 
